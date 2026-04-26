@@ -83,7 +83,7 @@ pub struct Dispute {
     pub session_id: u64,
     pub reason: String,
     pub evidence_cid: String,
-    pub created_at: u64,
+    pub created_at: u32,
     pub resolved: bool,
     pub seeker_award_bps: u32,
     pub expert_award_bps: u32,
@@ -108,8 +108,8 @@ pub struct ExpertProfile {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UpgradeTimelock {
     pub new_wasm_hash: BytesN<32>,
-    pub initiated_at: u64,
-    pub execute_after: u64,
+    pub initiated_at: u32,
+    pub execute_after: u32,
 }
 
 #[contracttype]
@@ -120,8 +120,8 @@ pub struct Session {
     pub expert: Address,
     pub token: Address,
     pub rate_per_second: i128,
-    pub start_timestamp: u64,
-    pub last_settlement_timestamp: u64,
+    pub start_timestamp: u32,
+    pub last_settlement_timestamp: u32,
     pub status: SessionStatus,
     pub balance: i128,
     pub accrued_amount: i128,
@@ -516,7 +516,7 @@ impl SkillSphereContract {
         }
 
         let session_id = Self::next_session_id(&env);
-        let now = env.ledger().timestamp();
+        let now = env.ledger().timestamp() as u32;
 
         let session = Session {
             id: session_id,
@@ -581,7 +581,7 @@ impl SkillSphereContract {
         let now = Self::bounded_time(&session, env.ledger().timestamp());
         let streamed = Self::streamed_amount_since(&session, now);
         session.accrued_amount = session.accrued_amount.saturating_add(streamed);
-        session.last_settlement_timestamp = now;
+        session.last_settlement_timestamp = now as u32;
         session.status = SessionStatus::Paused;
 
         Self::save_session(&env, &session);
@@ -603,7 +603,7 @@ impl SkillSphereContract {
             return Err(Error::InvalidSessionState);
         }
 
-        let now = env.ledger().timestamp();
+        let now = env.ledger().timestamp() as u32;
         session.last_settlement_timestamp = now;
         session.status = SessionStatus::Active;
 
@@ -726,7 +726,7 @@ impl SkillSphereContract {
             session_id,
             reason,
             evidence_cid: evidence_cid.clone(),
-            created_at: env.ledger().timestamp(),
+            created_at: env.ledger().timestamp() as u32,
             resolved: false,
             seeker_award_bps: 0,
             expert_award_bps: 0,
@@ -800,11 +800,11 @@ impl SkillSphereContract {
     pub fn initiate_upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
         Self::require_admin(&env)?;
 
-        let now = env.ledger().timestamp();
+        let now = env.ledger().timestamp() as u32;
         let timelock = UpgradeTimelock {
             new_wasm_hash,
             initiated_at: now,
-            execute_after: now + TIMELOCK_DURATION,
+            execute_after: now.saturating_add(TIMELOCK_DURATION as u32),
         };
 
         env.storage()
@@ -918,11 +918,11 @@ impl SkillSphereContract {
         let expiry = Self::expiry_timestamp_for_session(&session);
         let effective_time = Self::bounded_time(&session, now);
         let claimable = Self::claimable_amount_for_session(&session, effective_time);
-
+ 
         if claimable <= 0 {
             if now > expiry {
                 session.status = SessionStatus::Finished;
-                session.last_settlement_timestamp = expiry;
+                session.last_settlement_timestamp = expiry as u32;
                 Self::save_session(env, &session);
                 return Err(Error::SessionExpired);
             }
@@ -941,7 +941,7 @@ impl SkillSphereContract {
 
         session.balance -= claimable;
         session.accrued_amount = 0;
-        session.last_settlement_timestamp = effective_time;
+        session.last_settlement_timestamp = effective_time as u32;
 
         if session.balance == 0 || now >= expiry {
             session.status = SessionStatus::Finished;
@@ -989,7 +989,7 @@ impl SkillSphereContract {
 
         session.balance = 0;
         session.accrued_amount = 0;
-        session.last_settlement_timestamp = effective_time;
+        session.last_settlement_timestamp = effective_time as u32;
         session.status = SessionStatus::Finished;
 
         Self::save_session(env, session);
@@ -1029,25 +1029,23 @@ impl SkillSphereContract {
     }
 
     fn streamed_amount_since(session: &Session, current_time: u64) -> i128 {
-        if current_time <= session.last_settlement_timestamp {
+        if current_time <= session.last_settlement_timestamp as u64 {
             return 0;
         }
-
-        let elapsed = current_time - session.last_settlement_timestamp;
+ 
+        let elapsed = current_time - session.last_settlement_timestamp as u64;
         (elapsed as i128).saturating_mul(session.rate_per_second)
     }
 
     fn expiry_timestamp_for_session(session: &Session) -> u64 {
         if session.rate_per_second <= 0 || session.balance <= 0 {
-            return session.last_settlement_timestamp;
+            return session.last_settlement_timestamp as u64;
         }
-
+ 
         let funded_seconds =
             ((session.balance + session.rate_per_second - 1) / session.rate_per_second) as u64;
-
-        session
-            .last_settlement_timestamp
-            .saturating_add(funded_seconds)
+ 
+        (session.last_settlement_timestamp as u64).saturating_add(funded_seconds)
     }
 
     fn bounded_time(session: &Session, current_time: u64) -> u64 {
@@ -1188,7 +1186,7 @@ impl SkillSphereContract {
     }
 
     fn dispute_expiry_timestamp(dispute: &Dispute) -> u64 {
-        dispute.created_at.saturating_add(DISPUTE_EXPIRY_WINDOW)
+        (dispute.created_at as u64).saturating_add(DISPUTE_EXPIRY_WINDOW)
     }
 
     fn is_valid_ipfs_cid(cid: &String) -> bool {

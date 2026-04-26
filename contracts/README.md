@@ -249,11 +249,21 @@ Disputed sessions cannot be settled or ended until resolved, protecting both par
 ### Upgrade Timelock
 48-hour delay on protocol upgrades allows users to prepare or migrate.
 
-### Authorization
-- Seeker: Can start, pause, resume, end, and dispute sessions
-- Expert: Can settle and resume sessions
-- Admin: Can resolve disputes and upgrade contract
-- Arbitrator: Can resolve disputes (admin role)
+### Authorization & SEP-10
+The contract uses Soroban's native `require_auth()` and `require_auth_for_args()` mechanisms, which are fully compatible with Stellar SEP-10 Web Auth flows.
+
+#### How it works:
+1.  **Frontend Authentication**: The frontend proves ownership of the user's address by signing a SEP-10 challenge with a wallet (e.g., Freighter).
+2.  **Contract-side Verification**: When calling functions like `start_session` or `settle_session`, the contract invokes `address.require_auth()`.
+3.  **Cross-Contract Calls**: Authorization is automatically propagated if the contract calls other contracts (like the Token contract for transfers).
+
+#### Signing Challenges:
+-   **Session Initiation**: Seeker must sign the `start_session` transaction.
+-   **Settlement**: Expert must sign the `settle_session` transaction to prove they are the rightful recipient of the streamed funds.
+-   **Dispute Flagging**: Seeker must sign the `flag_dispute` transaction.
+
+#### Benefit:
+By leveraging `require_auth()`, the contract ensures that only the actual owner of a Stellar address can perform sensitive operations, preventing identity spoofing and unauthorized fund access.
 
 ## Testing
 
