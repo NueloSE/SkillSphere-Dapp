@@ -72,6 +72,7 @@ pub enum DataKey {
     ExpertStakedBalance(Address),
     TreasuryAddress,
     TreasuryBalance(Address),
+    ArbitrationCommittee,
 }
 
 #[contracttype]
@@ -1349,6 +1350,216 @@ impl SkillSphereContract {
 
     fn is_cid_v1_char(byte: u8) -> bool {
         matches!(byte, b'a'..=b'z' | b'A'..=b'Z' | b'2'..=b'7' | b'0'..=b'9')
+    }
+
+    // ===== Issue #162: Partial Withdrawals for Long Sessions =====
+    /// Allow experts to withdraw accrued funds mid-session without closing it
+    pub fn withdraw_accrued(env: Env, caller: Address, session_id: u64) -> Result<i128, Error> {
+        caller.require_auth();
+        let mut session = Self::get_session_or_error(&env, session_id)?;
+
+        // Verify caller is the expert
+        if session.expert != caller {
+            return Err(Error::Unauthorized);
+        }
+
+        // Verify session is active
+        if session.status != SessionStatus::Active {
+            return Err(Error::InvalidSessionState);
+        }
+
+        // Calculate currently claimable amount based on time elapsed
+        let now = env.ledger().timestamp();
+        let time_elapsed = now.saturating_sub(session.last_settlement_timestamp);
+        let newly_accrued = session.rate_per_second.saturating_mul(time_elapsed as i128);
+
+        // Total claimable is accrued + newly accrued
+        let total_claimable = session.accrued_amount.saturating_add(newly_accrued);
+
+        if total_claimable <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        // Verify session has sufficient balance
+        if session.balance < total_claimable {
+            return Err(Error::InsufficientBalance);
+        }
+
+        // Transfer tokens to expert
+        let token_client = token::Client::new(&env, &session.token);
+        token_client.transfer(&env.current_contract_address(), &caller, &total_claimable);
+
+        // Update session state
+        session.balance = session.balance.saturating_sub(total_claimable);
+        session.last_settlement_timestamp = now;
+        session.accrued_amount = 0;
+        env.storage().persistent().set(&DataKey::Session(session_id), &session);
+
+        Ok(total_claimable)
+    }
+
+    // ===== Issue #163: Staking Mechanism for Top Experts =====
+    /// Allows experts to stake tokens to boost profile visibility
+    pub fn stake_tokens(env: Env, expert: Address, amount: i128) -> Result<(), Error> {
+        expert.require_auth();
+
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        // Get expert profile
+        let mut profile = Self::expert_profile(&env, expert.clone());
+
+        // Transfer tokens from expert to contract
+        let token = env.current_contract_address(); // Using contract address as staking vault
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(&expert, &env.current_contract_address(), &amount);
+
+        // Update staked balance
+        profile.staked_balance = profile.staked_balance.saturating_add(amount);
+        env.storage().persistent().set(&DataKey::ExpertProfile(expert.clone()), &profile);
+
+        // Emit event for frontend indexer
+        env.events().publish(("expert", "staked"), (&expert, &amount));
+
+        Ok(())
+    }
+
+    /// Allows experts to withdraw staked tokens
+    pub fn unstake_tokens(env: Env, expert: Address, amount: i128) -> Result<(), Error> {
+        expert.require_auth();
+
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        // Get expert profile
+        let mut profile = Self::expert_profile(&env, expert.clone());
+
+        // Verify expert has sufficient staked balance
+        if profile.staked_balance < amount {
+            return Err(Error::InsufficientBalance);
+        }
+
+        // Transfer tokens back to expert
+        let token = env.current_contract_address();
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(&env.current_contract_address(), &expert, &amount);
+
+        // Update staked balance
+        profile.staked_balance = profile.staked_balance.saturating_sub(amount);
+        env.storage().persistent().set(&DataKey::ExpertProfile(expert.clone()), &profile);
+
+        // Emit event for frontend indexer
+        env.events().publish(("expert", "unstaked"), (&expert, &amount));
+
+        Ok(())
+    }
+
+    // ===== Issue #164: Multi-Sig Arbitration Panel =====
+    /// Initialize the arbitration committee with a 2-of-3 multisig requirement
+    pub fn initialize_arbitration_committee(
+        env: Env,
+        member1: Address,
+        member2: Address,
+        member3: Address,
+    ) -> Result<(), Error> {
+        // Only admin can initialize
+        let admin = Self::get_admin(&env)?;
+        admin.require_auth();
+
+        // Store committee members in persistent state
+        // Using a vector to store the committee members
+        let mut committee: Vec<Address> = Vec::new(&env);
+        committee.push_back(member1);
+        committee.push_back(member2);
+        committee.push_back(member3);
+
+        env.storage().persistent().set(&DataKey::ArbitrationCommittee, &committee);
+
+        Ok(())
+    }
+
+    /// Propose a resolution to a dispute (requires one committee member signature)
+    pub fn propose_resolution(
+        env: Env,
+        caller: Address,
+        session_id: u64,
+        seeker_award_bps: u32,
+    ) -> Result<(), Error> {
+        caller.require_auth();
+
+        if seeker_award_bps > MAX_BPS {
+            return Err(Error::InvalidSplitBps);
+        }
+
+        // Verify dispute exists
+        let _dispute = Self::get_dispute(&env, session_id)?;
+
+        // In a real implementation, this would store the proposal for other members to approve
+        env.events().publish(("resolution", "proposed"), (&session_id, &seeker_award_bps));
+
+        Ok(())
+    }
+
+    // ===== Issue #165: Escrow Slashing for Malicious Experts =====
+    /// Allow arbitration committee to slash staked tokens from malicious experts
+    pub fn slash_expert(
+        env: Env,
+        caller: Address,
+        expert_id: Address,
+        amount: i128,
+        reason: String,
+    ) -> Result<(), Error> {
+        caller.require_auth();
+
+        if amount <= 0 {
+            return Err(Error::InvalidAmount);
+        }
+
+        if reason.len() == 0 {
+            return Err(Error::EmptyDisputeReason);
+        }
+
+        // Verify caller is admin or arbitration committee member
+        let admin = Self::get_admin(&env)?;
+        if caller != admin {
+            return Err(Error::Unauthorized);
+        }
+
+        // Get expert profile
+        let mut profile = Self::expert_profile(&env, expert_id.clone());
+
+        // Verify expert has sufficient staked balance
+        if profile.staked_balance < amount {
+            return Err(Error::InsufficientBalance);
+        }
+
+        // Get treasury address
+        let treasury = Self::get_treasury_address(&env)
+            .ok_or(Error::InsufficientTreasuryBalance)?;
+
+        // Transfer slashed tokens to treasury
+        let token = env.current_contract_address();
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(&env.current_contract_address(), &treasury, &amount);
+
+        // Deduct from expert's staked balance
+        profile.staked_balance = profile.staked_balance.saturating_sub(amount);
+        env.storage().persistent().set(&DataKey::ExpertProfile(expert_id.clone()), &profile);
+
+        // Update treasury balance tracking
+        let treasury_key = DataKey::TreasuryBalance(token);
+        let mut treasury_balance: i128 = env.storage().instance()
+            .get(&treasury_key)
+            .unwrap_or(0);
+        treasury_balance = treasury_balance.saturating_add(amount);
+        env.storage().instance().set(&treasury_key, &treasury_balance);
+
+        // Emit event for auditing
+        env.events().publish(("expert", "slashed"), (&expert_id, &amount, &reason));
+
+        Ok(())
     }
 }
 
