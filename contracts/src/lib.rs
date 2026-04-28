@@ -388,6 +388,11 @@ impl SkillSphereContract {
         Ok(())
     }
 
+    /// Alias for set_treasury_address (issue #171).
+    pub fn set_treasury(env: Env, treasury: Address) -> Result<(), Error> {
+        Self::set_treasury_address(env, treasury)
+    }
+
     pub fn get_treasury_address(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::TreasuryAddress)
     }
@@ -1101,7 +1106,12 @@ impl SkillSphereContract {
         }
 
         if treasury_fee > 0 {
-            Self::collect_fee(env.clone(), session_id, token.clone(), treasury_fee)?;
+            if let Some(treasury) = env.storage().instance().get::<DataKey, Address>(&DataKey::TreasuryAddress) {
+                token_client.transfer(&env.current_contract_address(), &treasury, &treasury_fee);
+                env.events().publish((symbol_short!("feeRoute"),), (session_id, token.clone(), treasury_fee));
+            } else {
+                Self::collect_fee(env.clone(), session_id, token.clone(), treasury_fee)?;
+            }
         }
 
         // Dust cleanup for tiny balances
@@ -1409,7 +1419,7 @@ impl SkillSphereContract {
 
         // Calculate currently claimable amount based on time elapsed
         let now = env.ledger().timestamp();
-        let time_elapsed = now.saturating_sub(session.last_settlement_timestamp);
+        let time_elapsed = now.saturating_sub(session.last_settlement_timestamp as u64);
         let newly_accrued = session.rate_per_second.saturating_mul(time_elapsed as i128);
 
         // Total claimable is accrued + newly accrued
@@ -1430,7 +1440,7 @@ impl SkillSphereContract {
 
         // Update session state
         session.balance = session.balance.saturating_sub(total_claimable);
-        session.last_settlement_timestamp = now;
+        session.last_settlement_timestamp = now as u32;
         session.accrued_amount = 0;
         env.storage().persistent().set(&DataKey::Session(session_id), &session);
 
@@ -1459,7 +1469,7 @@ impl SkillSphereContract {
         env.storage().persistent().set(&DataKey::ExpertProfile(expert.clone()), &profile);
 
         // Emit event for frontend indexer
-        env.events().publish(("expert", "staked"), (&expert, &amount));
+        env.events().publish((symbol_short!("staked"),), (expert.clone(), amount));
 
         Ok(())
     }
@@ -1490,7 +1500,7 @@ impl SkillSphereContract {
         env.storage().persistent().set(&DataKey::ExpertProfile(expert.clone()), &profile);
 
         // Emit event for frontend indexer
-        env.events().publish(("expert", "unstaked"), (&expert, &amount));
+        env.events().publish((symbol_short!("unstaked"),), (expert.clone(), amount));
 
         Ok(())
     }
@@ -1504,7 +1514,7 @@ impl SkillSphereContract {
         member3: Address,
     ) -> Result<(), Error> {
         // Only admin can initialize
-        let admin = Self::get_admin(&env)?;
+        let admin = Self::get_admin_address(&env)?;
         admin.require_auth();
 
         // Store committee members in persistent state
@@ -1533,10 +1543,9 @@ impl SkillSphereContract {
         }
 
         // Verify dispute exists
-        let _dispute = Self::get_dispute(&env, session_id)?;
+        let _dispute = Self::get_session_or_error(&env, session_id)?;
 
-        // In a real implementation, this would store the proposal for other members to approve
-        env.events().publish(("resolution", "proposed"), (&session_id, &seeker_award_bps));
+        env.events().publish((symbol_short!("resProp"),), (session_id, seeker_award_bps));
 
         Ok(())
     }
@@ -1561,7 +1570,7 @@ impl SkillSphereContract {
         }
 
         // Verify caller is admin or arbitration committee member
-        let admin = Self::get_admin(&env)?;
+        let admin = Self::get_admin_address(&env)?;
         if caller != admin {
             return Err(Error::Unauthorized);
         }
@@ -1575,7 +1584,7 @@ impl SkillSphereContract {
         }
 
         // Get treasury address
-        let treasury = Self::get_treasury_address(&env)
+        let treasury = env.storage().instance().get::<DataKey, Address>(&DataKey::TreasuryAddress)
             .ok_or(Error::InsufficientTreasuryBalance)?;
 
         // Transfer slashed tokens to treasury
@@ -1596,7 +1605,7 @@ impl SkillSphereContract {
         env.storage().instance().set(&treasury_key, &treasury_balance);
 
         // Emit event for auditing
-        env.events().publish(("expert", "slashed"), (&expert_id, &amount, &reason));
+        env.events().publish((symbol_short!("slashed"),), (expert_id.clone(), amount, reason.clone()));
 
         Ok(())
     }
