@@ -9,6 +9,7 @@ const MAX_BPS: u32 = 10_000;
 const TIMELOCK_DURATION: u64 = 48 * 60 * 60;
 const DISPUTE_EXPIRY_WINDOW: u64 = 30 * 24 * 60 * 60;
 const SESSION_ESCROW_TTL: u64 = 300; // 5 minutes for pause grace period
+const SESSION_NO_SHOW_REFUND_WINDOW: u64 = 600; // 10 minutes
 const MIN_SESSION_ESCROW: i128 = 10; // Dust cleanup threshold
 const DEFAULT_FEE_FIRST_TIER_LIMIT: i128 = 1_000;
 const DEFAULT_FEE_FIRST_TIER_BPS: u32 = 500;
@@ -742,6 +743,44 @@ impl SkillSphereContract {
         }
 
         let (_, refund_amount) = Self::close_session(&env, &mut session)?;
+        Ok(refund_amount)
+    }
+
+    pub fn claim_no_show_refund(env: Env, seeker: Address, session_id: u64) -> Result<i128, Error> {
+        seeker.require_auth();
+        let mut session = Self::get_session_or_error(&env, session_id)?;
+
+        if seeker != session.seeker {
+            return Err(Error::Unauthorized);
+        }
+
+        if session.status != SessionStatus::Active {
+            return Err(Error::InvalidSessionState);
+        }
+
+        let now = env.ledger().timestamp();
+        if now <= session.start_timestamp as u64 + SESSION_NO_SHOW_REFUND_WINDOW {
+            return Err(Error::NotStarted);
+        }
+
+        if session.accrued_amount > 0 || session.last_settlement_timestamp != session.start_timestamp {
+            return Err(Error::InvalidSessionState);
+        }
+
+        let token_client = token::Client::new(&env, &session.token);
+        let refund_amount = session.balance;
+        token_client.transfer(&env.current_contract_address(), &session.seeker, &refund_amount);
+
+        session.balance = 0;
+        session.status = SessionStatus::Completed;
+        session.last_settlement_timestamp = now as u32;
+        Self::save_session(&env, &session);
+
+        env.events().publish(
+            (symbol_short!("session"), symbol_short!("noShowRf")),
+            (session_id, session.seeker.clone(), refund_amount, now),
+        );
+
         Ok(refund_amount)
     }
 
@@ -1997,6 +2036,37 @@ mod test {
         assert_eq!(token_client.balance(&expert), 100);
         assert_eq!(token_client.balance(&seeker), 99_900);
         assert_eq!(session.status, SessionStatus::Completed);
+    }
+
+    #[test]
+    fn test_claim_no_show_refund_after_timeout_returns_full_balance() {
+        let (env, client, contract_id, _, seeker, expert, token, _) = setup();
+        register_and_avail(&env, &client, &expert, 10);
+        let session_id =
+            client.start_session(&seeker, &expert, &token, &3000, &0, &test_cid(&env));
+        let token_client = token::Client::new(&env, &token);
+
+        env.ledger().set_timestamp(1_601);
+        let refunded = client.claim_no_show_refund(&seeker, &session_id);
+        let session = client.get_session(&session_id);
+
+        assert_eq!(refunded, 3_000);
+        assert_eq!(token_client.balance(&seeker), 100_000);
+        assert_eq!(token_client.balance(&contract_id), 0);
+        assert_eq!(session.balance, 0);
+        assert_eq!(session.status, SessionStatus::Completed);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #6)")]
+    fn test_claim_no_show_refund_fails_before_timeout() {
+        let (env, client, _, _, seeker, expert, token, _) = setup();
+        register_and_avail(&env, &client, &expert, 10);
+        let session_id =
+            client.start_session(&seeker, &expert, &token, &3000, &0, &test_cid(&env));
+
+        env.ledger().set_timestamp(1_600);
+        client.claim_no_show_refund(&seeker, &session_id);
     }
 
     #[test]
