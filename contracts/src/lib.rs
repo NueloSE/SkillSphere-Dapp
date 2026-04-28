@@ -388,6 +388,11 @@ impl SkillSphereContract {
         Ok(())
     }
 
+    /// Alias for set_treasury_address (issue #171).
+    pub fn set_treasury(env: Env, treasury: Address) -> Result<(), Error> {
+        Self::set_treasury_address(env, treasury)
+    }
+
     pub fn get_treasury_address(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::TreasuryAddress)
     }
@@ -1101,7 +1106,12 @@ impl SkillSphereContract {
         }
 
         if treasury_fee > 0 {
-            Self::collect_fee(env.clone(), session_id, token.clone(), treasury_fee)?;
+            if let Some(treasury) = env.storage().instance().get::<DataKey, Address>(&DataKey::TreasuryAddress) {
+                token_client.transfer(&env.current_contract_address(), &treasury, &treasury_fee);
+                env.events().publish((symbol_short!("feeRoute"),), (session_id, token.clone(), treasury_fee));
+            } else {
+                Self::collect_fee(env.clone(), session_id, token.clone(), treasury_fee)?;
+            }
         }
 
         // Dust cleanup for tiny balances
