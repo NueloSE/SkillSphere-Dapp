@@ -1401,16 +1401,15 @@ impl SkillSphereContract {
         matches!(byte, b'a'..=b'z' | b'A'..=b'Z' | b'2'..=b'7' | b'0'..=b'9')
     }
 
-    // ===== Issue #162: Partial Withdrawals for Long Sessions =====
-    /// Allow experts to withdraw accrued funds mid-session without closing it
-    pub fn withdraw_accrued(env: Env, caller: Address, session_id: u64) -> Result<i128, Error> {
-        caller.require_auth();
+    // ===== Issue #161: Partial Withdrawals for Long Sessions =====
+    /// Allow experts to withdraw accrued funds mid-session without closing it.
+    /// Calculates currently claimable amount, transfers tokens without changing session state,
+    /// and updates last_settlement_time.
+    pub fn withdraw_accrued(env: Env, session_id: u64) -> Result<i128, Error> {
         let mut session = Self::get_session_or_error(&env, session_id)?;
-
+        
         // Verify caller is the expert
-        if session.expert != caller {
-            return Err(Error::Unauthorized);
-        }
+        session.expert.require_auth();
 
         // Verify session is active
         if session.status != SessionStatus::Active {
@@ -1434,15 +1433,20 @@ impl SkillSphereContract {
             return Err(Error::InsufficientBalance);
         }
 
-        // Transfer tokens to expert
-        let token_client = token::Client::new(&env, &session.token);
-        token_client.transfer(&env.current_contract_address(), &caller, &total_claimable);
-
-        // Update session state
+        // Update session state (Checks-Effects-Interactions pattern)
         session.balance = session.balance.saturating_sub(total_claimable);
         session.last_settlement_timestamp = now as u32;
         session.accrued_amount = 0;
-        env.storage().persistent().set(&DataKey::Session(session_id), &session);
+        Self::save_session(&env, &session);
+
+        // Transfer tokens to expert
+        let token_client = token::Client::new(&env, &session.token);
+        token_client.transfer(&env.current_contract_address(), &session.expert, &total_claimable);
+
+        env.events().publish(
+            (symbol_short!("withdraw"), symbol_short!("accrued")),
+            (session_id, total_claimable, now),
+        );
 
         Ok(total_claimable)
     }
@@ -2637,6 +2641,376 @@ mod test {
         let results = client.batch_settle(&expert, &ids);
 
         assert_eq!(results.get(0).unwrap(), 95);
+        assert_eq!(results.get(1).unwrap(), 0);
+    }
+
+    // --- Issue #161: Partial Withdrawals for Long Sessions ---
+
+    #[test]
+    fn test_withdraw_accrued_calculates_claimable_amount() {
+        let (env, client, _, _, seeker, expert, token, _) = setup();
+        register_and_avail(&env, &client, &expert, 100);
+        let session_id =
+            client.start_session(&seeker, &expert, &token, &30_000, &0, &test_cid(&env));
+
+        // Simulate 10 seconds elapsed
+        env.ledger().set_timestamp(1_010);
+        let withdrawn = client.withdraw_accrued(&session_id);
+
+        // 10 seconds * 100 rate = 1000 tokens
+        assert_eq!(withdrawn, 1_000);
+
+        let session = client.get_session(&session_id);
+        assert_eq!(session.balance, 29_000);
+        assert_eq!(session.last_settlement_timestamp, 1_010);
+        assert_eq!(session.accrued_amount, 0);
+        assert_eq!(session.status, SessionStatus::Active);
+    }
+
+    #[test]
+    fn test_withdraw_accrued_transfers_tokens_without_closing_session() {
+        let (env, client, _, _, seeker, expert, token, _) = setup();
+        register_and_avail(&env, &client, &expert, 50);
+        let token_client = token::Client::new(&env, &token);
+        let session_id =
+            client.start_session(&seeker, &expert, &token, &10_000, &0, &test_cid(&env));
+
+        env.ledger().set_timestamp(1_020);
+        client.withdraw_accrued(&session_id);
+
+        // Expert should receive 20 seconds * 50 rate = 1000 tokens
+        assert_eq!(token_client.balance(&expert), 1_000);
+
+        // Session should still be active
+        let session = client.get_session(&session_id);
+        assert_eq!(session.status, SessionStatus::Active);
+        assert_eq!(session.balance, 9_000);
+    }
+
+    #[test]
+    fn test_withdraw_accrued_updates_last_settlement_time() {
+        let (env, client, _, _, seeker, expert, token, _) = setup();
+        register_and_avail(&env, &client, &expert, 10);
+        let session_id =
+            client.start_session(&seeker, &expert, &token, &5_000, &0, &test_cid(&env));
+
+        let initial_session = client.get_session(&session_id);
+        assert_eq!(initial_session.last_settlement_timestamp, 1_000);
+
+        env.ledger().set_timestamp(1_050);
+        client.withdraw_accrued(&session_id);
+
+        let updated_session = client.get_session(&session_id);
+        assert_eq!(updated_session.last_settlement_timestamp, 1_050);
+    }
+
+    #[test]
+    fn test_withdraw_accrued_multiple_times_in_long_session() {
+        let (env, client, _, _, seeker, expert, token, _) = setup();
+        register_and_avail(&env, &client, &expert, 100);
+        let token_client = token::Client::new(&env, &token);
+        let session_id =
+            client.start_session(&seeker, &expert, &token, &100_000, &0, &test_cid(&env));
+
+        // First withdrawal after 100 seconds
+        env.ledger().set_timestamp(1_100);
+        let first_withdrawal = client.withdraw_accrued(&session_id);
+        assert_eq!(first_withdrawal, 10_000);
+        assert_eq!(token_client.balance(&expert), 10_000);
+
+        // Second withdrawal after another 200 seconds
+        env.ledger().set_timestamp(1_300);
+        let second_withdrawal = client.withdraw_accrued(&session_id);
+        assert_eq!(second_withdrawal, 20_000);
+        assert_eq!(token_client.balance(&expert), 30_000);
+
+        // Session should still be active with remaining balance
+        let session = client.get_session(&session_id);
+        assert_eq!(session.status, SessionStatus::Active);
+        assert_eq!(session.balance, 70_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #1)")]
+    fn test_withdraw_accrued_fails_if_not_expert() {
+        let (env, client, _, _, seeker, expert, token, _) = setup();
+        register_and_avail(&env, &client, &expert, 10);
+        let session_id =
+            client.start_session(&seeker, &expert, &token, &3_000, &0, &test_cid(&env));
+
+        env.ledger().set_timestamp(1_010);
+        
+        // Try to withdraw as seeker (should fail)
+        env.mock_all_auths_allowing_non_root_auth();
+        client.mock_auths(&[soroban_sdk::testutils::MockAuth {
+            address: &seeker,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "withdraw_accrued",
+                args: (session_id,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        client.withdraw_accrued(&session_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #3)")]
+    fn test_withdraw_accrued_fails_if_session_not_active() {
+        let (env, client, _, _, seeker, expert, token, _) = setup();
+        register_and_avail(&env, &client, &expert, 10);
+        let session_id =
+            client.start_session(&seeker, &expert, &token, &3_000, &0, &test_cid(&env));
+
+        // Pause the session
+        client.pause_session(&expert, &session_id);
+
+        env.ledger().set_timestamp(1_010);
+        client.withdraw_accrued(&session_id);
+    }
+
+    // --- Issue #158: Enforce Minimum Session Escrow ---
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #26)")]
+    fn test_start_session_enforces_minimum_escrow_5_minutes() {
+        let (env, client, _, _, seeker, expert, token, _) = setup();
+        // Expert rate is 10 tokens per second
+        register_and_avail(&env, &client, &expert, 10);
+        
+        // Minimum escrow should be rate * 300 seconds (5 minutes) = 10 * 300 = 3000
+        // Try to start with less than minimum
+        client.start_session(&seeker, &expert, &token, &2_999, &0, &test_cid(&env));
+    }
+
+    #[test]
+    fn test_start_session_accepts_exact_minimum_escrow() {
+        let (env, client, _, _, seeker, expert, token, _) = setup();
+        register_and_avail(&env, &client, &expert, 10);
+        
+        // Minimum escrow is rate * 300 = 10 * 300 = 3000
+        let session_id = client.start_session(&seeker, &expert, &token, &3_000, &0, &test_cid(&env));
+        
+        let session = client.get_session(&session_id);
+        assert_eq!(session.balance, 3_000);
+        assert_eq!(session.status, SessionStatus::Active);
+    }
+
+    #[test]
+    fn test_minimum_escrow_scales_with_expert_rate() {
+        let (env, client, _, _, seeker, expert, token, _) = setup();
+        let asset_admin = token::StellarAssetClient::new(&env, &token);
+        asset_admin.mint(&seeker, &100_000);
+        
+        // High rate expert: 100 tokens per second
+        register_and_avail(&env, &client, &expert, 100);
+        
+        // Minimum escrow is 100 * 300 = 30,000
+        let session_id = client.start_session(&seeker, &expert, &token, &30_000, &0, &test_cid(&env));
+        
+        let session = client.get_session(&session_id);
+        assert_eq!(session.balance, 30_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #26)")]
+    fn test_minimum_escrow_prevents_zero_balance_sessions() {
+        let (env, client, _, _, seeker, expert, token, _) = setup();
+        register_and_avail(&env, &client, &expert, 1);
+        
+        // Try to start with 0 balance (should fail)
+        client.start_session(&seeker, &expert, &token, &0, &0, &test_cid(&env));
+    }
+
+    // --- Issue #159: Dynamic Platform Fee Percentage ---
+
+    #[test]
+    fn test_set_platform_fee_updates_fee_dynamically() {
+        let (env, client, _, _, seeker, expert, token, _) = setup();
+        register_and_avail(&env, &client, &expert, 10);
+        
+        // Default fee is 500 bps (5%)
+        assert_eq!(client.get_fee(), 500);
+        
+        // Admin sets new fee to 0 for promotional period
+        client.set_fee(&0);
+        assert_eq!(client.get_fee(), 0);
+        
+        // Start session and settle - should have 0 fee
+        let session_id = client.start_session(&seeker, &expert, &token, &3_000, &0, &test_cid(&env));
+        env.ledger().set_timestamp(1_010);
+        let settled = client.settle_session(&session_id);
+        
+        // With 0% fee, expert gets full amount (100 tokens)
+        assert_eq!(settled, 100);
+        assert_eq!(client.get_treasury_balance(&token), 0);
+    }
+
+    #[test]
+    fn test_platform_fee_calculation_uses_dynamic_value() {
+        let (_, client, _, _, _, _, _, _) = setup();
+        
+        // Set fee to 250 bps (2.5%)
+        client.set_fee(&250);
+        
+        let fee = client.calculate_platform_fee(&10_000);
+        // 10,000 * 2.5% = 250
+        assert_eq!(fee, 250);
+    }
+
+    #[test]
+    fn test_admin_can_run_zero_fee_promotional_period() {
+        let (env, client, _, _, seeker, expert, token, _) = setup();
+        register_and_avail(&env, &client, &expert, 100);
+        let token_client = token::Client::new(&env, &token);
+        
+        // Set 0% fee for promotion
+        client.set_fee(&0);
+        
+        let session_id = client.start_session(&seeker, &expert, &token, &10_000, &0, &test_cid(&env));
+        env.ledger().set_timestamp(1_050);
+        client.settle_session(&session_id);
+        
+        // Expert should receive full 5000 tokens (50 seconds * 100 rate) with no fee
+        assert_eq!(token_client.balance(&expert), 5_000);
+        assert_eq!(client.get_treasury_balance(&token), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #14)")]
+    fn test_set_platform_fee_rejects_invalid_bps() {
+        let (_, client, _, _, _, _, _, _) = setup();
+        
+        // Try to set fee above 10,000 bps (100%)
+        client.set_fee(&10_001);
+    }
+
+    #[test]
+    fn test_platform_fee_stored_in_admin_state() {
+        let (_, client, _, _, _, _, _, _) = setup();
+        
+        client.set_fee(&750);
+        let config = client.get_fee_config();
+        
+        assert_eq!(config.first_tier_bps, 750);
+    }
+
+    // --- Issue #160: Multi-Token Support for Payments ---
+
+    #[test]
+    fn test_session_stores_token_address() {
+        let (env, client, _, _, seeker, expert, token, _) = setup();
+        register_and_avail(&env, &client, &expert, 10);
+        
+        let session_id = client.start_session(&seeker, &expert, &token, &3_000, &0, &test_cid(&env));
+        
+        let session = client.get_session(&session_id);
+        assert_eq!(session.token, token);
+    }
+
+    #[test]
+    fn test_multiple_sessions_with_different_tokens() {
+        let (env, client, _, _, seeker, expert, token1, token_admin) = setup();
+        register_and_avail(&env, &client, &expert, 10);
+        
+        // Create second token (USDC)
+        let token2 = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token2_address = token2.address();
+        let asset_admin2 = token::StellarAssetClient::new(&env, &token2_address);
+        asset_admin2.mint(&seeker, &10_000);
+        
+        // Start session with first token (XLM)
+        let session1_id = client.start_session(&seeker, &expert, &token1, &3_000, &0, &test_cid(&env));
+        
+        // Start session with second token (USDC)
+        let session2_id = client.start_session(&seeker, &expert, &token2_address, &5_000, &0, &test_cid(&env));
+        
+        let session1 = client.get_session(&session1_id);
+        let session2 = client.get_session(&session2_id);
+        
+        assert_eq!(session1.token, token1);
+        assert_eq!(session2.token, token2_address);
+        assert_ne!(session1.token, session2.token);
+    }
+
+    #[test]
+    fn test_settle_session_uses_correct_token_contract() {
+        let (env, client, _, _, seeker, expert, token1, token_admin) = setup();
+        register_and_avail(&env, &client, &expert, 10);
+        
+        // Create USDC token
+        let usdc_token = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let usdc_address = usdc_token.address();
+        let usdc_admin = token::StellarAssetClient::new(&env, &usdc_address);
+        usdc_admin.mint(&seeker, &10_000);
+        
+        let usdc_client = token::Client::new(&env, &usdc_address);
+        
+        // Start session with USDC
+        let session_id = client.start_session(&seeker, &expert, &usdc_address, &5_000, &0, &test_cid(&env));
+        
+        env.ledger().set_timestamp(1_010);
+        client.settle_session(&session_id);
+        
+        // Verify payment was made in USDC, not XLM
+        assert_eq!(usdc_client.balance(&expert), 95);
+        
+        let token1_client = token::Client::new(&env, &token1);
+        assert_eq!(token1_client.balance(&expert), 0);
+    }
+
+    #[test]
+    fn test_expert_can_accept_multiple_token_types() {
+        let (env, client, _, _, seeker, expert, xlm_token, token_admin) = setup();
+        register_and_avail(&env, &client, &expert, 10);
+        
+        // Create USDC and DAI tokens
+        let usdc = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let usdc_address = usdc.address();
+        let dai = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let dai_address = dai.address();
+        
+        let usdc_admin = token::StellarAssetClient::new(&env, &usdc_address);
+        let dai_admin = token::StellarAssetClient::new(&env, &dai_address);
+        usdc_admin.mint(&seeker, &10_000);
+        dai_admin.mint(&seeker, &10_000);
+        
+        // Expert accepts sessions in XLM, USDC, and DAI
+        let xlm_session = client.start_session(&seeker, &expert, &xlm_token, &3_000, &0, &test_cid(&env));
+        let usdc_session = client.start_session(&seeker, &expert, &usdc_address, &4_000, &0, &test_cid(&env));
+        let dai_session = client.start_session(&seeker, &expert, &dai_address, &5_000, &0, &test_cid(&env));
+        
+        // Verify all sessions are active with correct tokens
+        assert_eq!(client.get_session(&xlm_session).token, xlm_token);
+        assert_eq!(client.get_session(&usdc_session).token, usdc_address);
+        assert_eq!(client.get_session(&dai_session).token, dai_address);
+    }
+
+    #[test]
+    fn test_treasury_tracks_fees_per_token() {
+        let (env, client, _, _, seeker, expert, token1, token_admin) = setup();
+        register_and_avail(&env, &client, &expert, 10);
+        
+        let token2 = env.register_stellar_asset_contract_v2(token_admin.clone());
+        let token2_address = token2.address();
+        let asset_admin2 = token::StellarAssetClient::new(&env, &token2_address);
+        asset_admin2.mint(&seeker, &10_000);
+        
+        // Start and settle sessions with different tokens
+        let session1 = client.start_session(&seeker, &expert, &token1, &3_000, &0, &test_cid(&env));
+        let session2 = client.start_session(&seeker, &expert, &token2_address, &5_000, &0, &test_cid(&env));
+        
+        env.ledger().set_timestamp(1_010);
+        client.settle_session(&session1);
+        client.settle_session(&session2);
+        
+        // Treasury should track fees separately for each token
+        let token1_fees = client.get_treasury_balance(&token1);
+        let token2_fees = client.get_treasury_balance(&token2_address);
+        
+        assert_eq!(token1_fees, 5); // 5% of 100
+        assert_eq!(token2_fees, 5); // 5% of 100
+    }get(0).unwrap(), 95);
         assert_eq!(results.get(1).unwrap(), 0);
     }
 }
