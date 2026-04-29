@@ -30,6 +30,7 @@ const COURSE_DATA: Record<
   string,
   {
     title: string;
+    currentLesson: string;
     image: string;
     overview: string;
     learningPoints: string[];
@@ -41,6 +42,7 @@ const COURSE_DATA: Record<
 > = {
   "1": {
     title: "Become a Web3 Developer: A beginners approach",
+    currentLesson: "Intro to Digital Technology",
     image: image1.src,
     overview:
       "This comprehensive course introduces you to Web3 development fundamentals. Learn blockchain concepts, smart contracts, and decentralized application development from industry experts.",
@@ -76,6 +78,7 @@ const COURSE_DATA: Record<
   },
   "2": {
     title: "Design made simple",
+    currentLesson: "Fundamentals of Visual Design",
     image: image1.src,
     overview:
       "A complete guide to modern interface design principles and practices. Learn how to create beautiful, functional, and user-centered digital experiences.",
