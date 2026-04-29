@@ -1,8 +1,11 @@
 #![no_std]
 
+mod errors;
+pub use errors::Error;
+
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
-    panic_with_error, String, Vec,
+    contract, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
+    String, Vec,
 };
 
 const MAX_BPS: u32 = 10_000;
@@ -22,38 +25,6 @@ const STAKE_TIER_3: i128 = 10_000;
 const FEE_REDUCTION_TIER_1_BPS: u32 = 100;
 const FEE_REDUCTION_TIER_2_BPS: u32 = 200;
 const FEE_REDUCTION_TIER_3_BPS: u32 = 300;
-
-#[contracterror]
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[repr(u32)]
-pub enum Error {
-    Unauthorized = 1,
-    SessionNotFound = 2,
-    InvalidSessionState = 3,
-    InsufficientBalance = 4,
-    InvalidAmount = 5,
-    NotStarted = 6,
-    AlreadyFinished = 7,
-    DisputeNotFound = 8,
-    UpgradeNotInitiated = 9,
-    TimelockNotExpired = 10,
-    EmptyDisputeReason = 11,
-    ProtocolPaused = 12,
-    ReputationTooLow = 13,
-    InvalidFeeBps = 14,
-    SessionExpired = 15,
-    InvalidCid = 16,
-    InvalidSplitBps = 17,
-    DisputeWindowActive = 18,
-    InvalidFeeConfig = 19,
-    InsufficientTreasuryBalance = 20,
-    AmountBelowMinimum = 21,
-    ExpertNotRegistered = 22,
-    ExpertUnavailable = 23,
-    InvalidReferrer = 24,
-    ReentrancyDetected = 25,
-    DepositTooLow = 26,
-}
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -158,7 +129,7 @@ impl SkillSphereContract {
     /// * If the contract has already been initialized.
     pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
-            panic!("already initialized");
+            return Err(Error::AlreadyInitialized);
         }
 
         admin.require_auth();
@@ -183,6 +154,7 @@ impl SkillSphereContract {
         env.storage()
             .instance()
             .set(&DataKey::ReentrancyLock, &false);
+        Ok(())
     }
 
     /// Registers or updates an expert's profile details.
