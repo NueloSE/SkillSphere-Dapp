@@ -1,0 +1,34 @@
+use soroban_sdk::contracterror;
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum Error {
+    InsufficientFunds = 1,
+    Unauthorized = 2,
+    SessionNotActive = 3,
+    SessionNotFound = 4,
+    InvalidAmount = 5,
+    NotStarted = 6,
+    AlreadyFinished = 7,
+    DisputeNotFound = 8,
+    UpgradeNotInitiated = 9,
+    TimelockNotExpired = 10,
+    EmptyDisputeReason = 11,
+    ProtocolPaused = 12,
+    ReputationTooLow = 13,
+    InvalidFeeBps = 14,
+    SessionExpired = 15,
+    InvalidCid = 16,
+    InvalidSplitBps = 17,
+    DisputeWindowActive = 18,
+    InvalidFeeConfig = 19,
+    InsufficientTreasuryBalance = 20,
+    AmountBelowMinimum = 21,
+    ExpertNotRegistered = 22,
+    ExpertUnavailable = 23,
+    InvalidReferrer = 24,
+    ReentrancyDetected = 25,
+    DepositTooLow = 26,
+    AlreadyInitialized = 27,
+}
