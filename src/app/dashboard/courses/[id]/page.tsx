@@ -6,6 +6,7 @@ import SummaryTabContent from "@/components/dashboard/SummaryTabContent";
 import ResourcesTabContent from "@/components/dashboard/ResourcesTabContent";
 import TaskTabContent from "@/components/dashboard/TaskTabContent";
 import CourseContentTrackerSidebar from "@/components/dashboard/CourseContentTrackerSidebar";
+import CourseLearningHeader from "@/components/dashboard/CourseLearningHeader";
 import image1 from "../../../../../public/Image (1).png";
 
 type TabId = "overview" | "resources" | "tasks" | "summary";
@@ -18,6 +19,7 @@ const COURSE_DATA: Record<
   string,
   {
     title: string;
+    currentLesson: string;
     image: string;
     overview: string;
     learningPoints: string[];
@@ -29,6 +31,7 @@ const COURSE_DATA: Record<
 > = {
   "1": {
     title: "Become a Web3 Developer: A beginners approach",
+    currentLesson: "Intro to Digital Technology",
     image: image1.src,
     overview:
       "This comprehensive course introduces you to Web3 development fundamentals. Learn blockchain concepts, smart contracts, and decentralized application development from industry experts.",
@@ -64,6 +67,7 @@ const COURSE_DATA: Record<
   },
   "2": {
     title: "Design made simple",
+    currentLesson: "Fundamentals of Visual Design",
     image: image1.src,
     overview:
       "A complete guide to modern interface design principles and practices. Learn how to create beautiful, functional, and user-centered digital experiences.",
@@ -113,20 +117,22 @@ export default function CourseDetailsPage({ params }: { params: Params }) {
 
   return (
     <div className="space-y-6 pb-12">
-      <div className="space-y-4">
-        <div className="relative w-full h-64 rounded-lg overflow-hidden bg-gray-900">
-          <img
-            src={courseData.image}
-            alt={courseData.title}
-            className="w-full h-full object-cover"
-          />
-        </div>
-        <h1 className="text-2xl font-bold text-white">{courseData.title}</h1>
-      </div>
-
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 space-y-6">
-          <div className="flex gap-2 border-b border-[#1D1D1C] overflow-x-auto">
+        <div className="lg:col-span-2 space-y-4">
+          <CourseLearningHeader
+            courseTitle={courseData.title}
+            currentLesson={courseData.currentLesson}
+          />
+
+          <div className="relative w-full h-64 rounded-lg overflow-hidden bg-gray-900">
+            <img
+              src={courseData.image}
+              alt={courseData.title}
+              className="w-full h-full object-cover"
+            />
+          </div>
+
+          <div className="flex gap-2 border-b border-[#1D1D1C] overflow-x-auto mt-2">
             {[
               { id: "overview" as const, label: "Overview" },
               { id: "resources" as const, label: "Resources" },
