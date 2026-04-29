@@ -149,6 +149,13 @@ pub struct SkillSphereContract;
 
 #[contractimpl]
 impl SkillSphereContract {
+    /// Initializes the contract with an administrator and default configurations.
+    ///
+    /// # Arguments
+    /// * `admin` - The address of the initial contract administrator.
+    ///
+    /// # Panics
+    /// * If the contract has already been initialized.
     pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
             panic!("already initialized");
@@ -178,6 +185,15 @@ impl SkillSphereContract {
             .set(&DataKey::ReentrancyLock, &false);
     }
 
+    /// Registers or updates an expert's profile details.
+    ///
+    /// # Arguments
+    /// * `expert` - The address of the expert.
+    /// * `rate` - The rate per second charged by the expert.
+    /// * `metadata_cid` - IPFS Content ID for the expert's metadata.
+    ///
+    /// # Failure
+    /// * Requires authentication from the expert.
     pub fn register_expert(env: Env, expert: Address, rate: i128, metadata_cid: String) {
         expert.require_auth();
         let mut profile = Self::expert_profile(&env, expert.clone());
@@ -188,6 +204,14 @@ impl SkillSphereContract {
             .set(&DataKey::ExpertProfile(expert), &profile);
     }
 
+    /// Sets the availability status of an expert.
+    ///
+    /// # Arguments
+    /// * `expert` - The address of the expert.
+    /// * `status` - True if available, false otherwise.
+    ///
+    /// # Failure
+    /// * Requires authentication from the expert.
     pub fn set_availability(env: Env, expert: Address, status: bool) {
         expert.require_auth();
         let mut profile = Self::expert_profile(&env, expert.clone());
@@ -197,6 +221,16 @@ impl SkillSphereContract {
             .set(&DataKey::ExpertProfile(expert), &profile);
     }
 
+    /// Updates the encrypted notes hash for a specific session.
+    ///
+    /// # Arguments
+    /// * `caller` - The address of the participant (seeker or expert).
+    /// * `session_id` - The ID of the session.
+    /// * `notes_hash` - The new encrypted notes hash.
+    ///
+    /// # Errors
+    /// * `Error::SessionNotFound` - If the session doesn't exist.
+    /// * `Error::Unauthorized` - If the caller is not a participant in the session.
     pub fn update_session_notes(env: Env, caller: Address, session_id: u64, notes_hash: String) -> Result<(), Error> {
         caller.require_auth();
         let mut session = Self::get_session_or_error(&env, session_id)?;
@@ -211,6 +245,13 @@ impl SkillSphereContract {
     }
 
 
+    /// Updates the contract administrator.
+    ///
+    /// # Arguments
+    /// * `new_admin` - The address of the new administrator.
+    ///
+    /// # Errors
+    /// * `Error::Unauthorized` - If the caller is not the current administrator.
     pub fn set_admin(env: Env, new_admin: Address) -> Result<(), Error> {
         Self::require_admin(&env)?;
         new_admin.require_auth();
@@ -222,10 +263,22 @@ impl SkillSphereContract {
         Ok(())
     }
 
+    /// Retrieves the current contract administrator address.
+    ///
+    /// # Errors
+    /// * `Error::Unauthorized` - If no administrator is set.
     pub fn get_admin(env: Env) -> Result<Address, Error> {
         Self::get_admin_address(&env)
     }
 
+    /// Sets the platform fee in basis points (bps).
+    ///
+    /// # Arguments
+    /// * `fee_bps` - The fee in basis points (100 bps = 1%).
+    ///
+    /// # Errors
+    /// * `Error::Unauthorized` - If the caller is not the administrator.
+    /// * `Error::InvalidFeeBps` - If the fee exceeds the maximum allowed (10,000 bps).
     pub fn set_fee(env: Env, fee_bps: u32) -> Result<(), Error> {
         Self::require_admin(&env)?;
 
@@ -244,10 +297,21 @@ impl SkillSphereContract {
         Ok(())
     }
 
+    /// Retrieves the current platform fee in basis points.
     pub fn get_fee(env: Env) -> u32 {
         Self::fee_config(&env).first_tier_bps
     }
 
+    /// Sets complex fee tiers for the platform.
+    ///
+    /// # Arguments
+    /// * `first_tier_limit` - The upper limit of the first fee tier.
+    /// * `first_tier_bps` - Fee bps for the first tier.
+    /// * `second_tier_bps` - Fee bps for the second tier (above the limit).
+    ///
+    /// # Errors
+    /// * `Error::Unauthorized` - If the caller is not the administrator.
+    /// * `Error::InvalidFeeConfig` - If the fee configuration is invalid.
     pub fn set_fee_tiers(
         env: Env,
         first_tier_limit: i128,
@@ -272,10 +336,19 @@ impl SkillSphereContract {
         Ok(())
     }
 
+    /// Retrieves the current platform fee configuration.
     pub fn get_fee_config(env: Env) -> FeeConfig {
         Self::fee_config(&env)
     }
 
+    /// Sets the minimum deposit required to start a session.
+    ///
+    /// # Arguments
+    /// * `min_deposit` - The minimum amount to be deposited.
+    ///
+    /// # Errors
+    /// * `Error::Unauthorized` - If the caller is not the administrator.
+    /// * `Error::InvalidAmount` - If the deposit amount is zero or negative.
     pub fn set_min_session_deposit(env: Env, min_deposit: i128) -> Result<(), Error> {
         Self::require_admin(&env)?;
 
@@ -292,10 +365,18 @@ impl SkillSphereContract {
         Ok(())
     }
 
+    /// Retrieves the current minimum session deposit requirement.
     pub fn get_min_session_deposit(env: Env) -> i128 {
         Self::min_session_deposit(&env)
     }
 
+    /// Sets the staking contract address.
+    ///
+    /// # Arguments
+    /// * `staking_contract` - The address of the staking contract.
+    ///
+    /// # Errors
+    /// * `Error::Unauthorized` - If the caller is not the administrator.
     pub fn set_staking_contract(env: Env, staking_contract: Address) -> Result<(), Error> {
         Self::require_admin(&env)?;
         env.storage()
@@ -306,10 +387,20 @@ impl SkillSphereContract {
         Ok(())
     }
 
+    /// Retrieves the current staking contract address.
     pub fn get_staking_contract(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::StakingContract)
     }
 
+    /// Manually sets an expert's staked balance (admin only).
+    ///
+    /// # Arguments
+    /// * `expert` - The address of the expert.
+    /// * `staked_balance` - The balance to set.
+    ///
+    /// # Errors
+    /// * `Error::Unauthorized` - If the caller is not the administrator.
+    /// * `Error::InvalidAmount` - If the balance is negative.
     pub fn set_expert_staked_balance(
         env: Env,
         expert: Address,
@@ -328,6 +419,7 @@ impl SkillSphereContract {
         Ok(())
     }
 
+    /// Retrieves the staked balance for a specific expert.
     pub fn get_expert_staked_balance(env: Env, expert: Address) -> i128 {
         env.storage()
             .persistent()
@@ -335,6 +427,7 @@ impl SkillSphereContract {
             .unwrap_or(0i128)
     }
 
+    /// Calculates the effective fee bps for an expert, considering their stake.
     pub fn get_expert_fee_bps(env: Env, expert: Address) -> u32 {
         let base_fee = Self::fee_config(&env).first_tier_bps;
         let staked_balance = Self::get_expert_staked_balance(env, expert);
@@ -352,6 +445,14 @@ impl SkillSphereContract {
         base_fee.saturating_sub(reduction)
     }
 
+    /// Sets a referrer for an expert.
+    ///
+    /// # Arguments
+    /// * `expert` - The address of the expert.
+    /// * `referrer` - The address of the referrer.
+    ///
+    /// # Errors
+    /// * `Error::InvalidReferrer` - If the expert tries to refer themselves.
     pub fn set_expert_referrer(env: Env, expert: Address, referrer: Address) -> Result<(), Error> {
         expert.require_auth();
 
@@ -371,14 +472,23 @@ impl SkillSphereContract {
         Ok(())
     }
 
+    /// Retrieves the profile of an expert.
     pub fn get_expert_profile(env: Env, expert: Address) -> ExpertProfile {
         Self::expert_profile(&env, expert)
     }
 
+    /// Retrieves the referrer of an expert.
     pub fn get_expert_referrer(env: Env, expert: Address) -> Option<Address> {
         Self::expert_profile(&env, expert).referrer
     }
 
+    /// Sets the treasury address.
+    ///
+    /// # Arguments
+    /// * `treasury` - The address of the treasury.
+    ///
+    /// # Errors
+    /// * `Error::Unauthorized` - If the caller is not the administrator.
     pub fn set_treasury_address(env: Env, treasury: Address) -> Result<(), Error> {
         Self::require_admin(&env)?;
         env.storage()
@@ -393,10 +503,12 @@ impl SkillSphereContract {
         Self::set_treasury_address(env, treasury)
     }
 
+    /// Retrieves the current treasury address.
     pub fn get_treasury_address(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::TreasuryAddress)
     }
 
+    /// Retrieves the treasury balance for a specific token.
     pub fn get_treasury_balance(env: Env, token: Address) -> i128 {
         env.storage()
             .persistent()
@@ -404,6 +516,15 @@ impl SkillSphereContract {
             .unwrap_or(0i128)
     }
 
+    /// Collects fees from a session and adds them to the treasury balance.
+    ///
+    /// # Arguments
+    /// * `session_id` - The ID of the session.
+    /// * `token` - The address of the token being collected.
+    /// * `amount` - The amount of fees to collect.
+    ///
+    /// # Errors
+    /// * `Error::InvalidAmount` - If the amount is zero or negative.
     pub fn collect_fee(
         env: Env,
         session_id: u64,
@@ -427,6 +548,17 @@ impl SkillSphereContract {
         Ok(())
     }
 
+    /// Withdraws tokens from the treasury to a recipient.
+    ///
+    /// # Arguments
+    /// * `token` - The address of the token to withdraw.
+    /// * `amount` - The amount to withdraw.
+    /// * `recipient` - The address to receive the tokens.
+    ///
+    /// # Errors
+    /// * `Error::Unauthorized` - If the caller is not the administrator.
+    /// * `Error::InvalidAmount` - If the amount is zero or negative.
+    /// * `Error::InsufficientTreasuryBalance` - If the treasury doesn't have enough balance.
     pub fn withdraw_treasury(
         env: Env,
         token: Address,
@@ -460,6 +592,14 @@ impl SkillSphereContract {
         Ok(())
     }
 
+    /// Withdraws all tokens of a specific type from the treasury.
+    ///
+    /// # Arguments
+    /// * `token` - The address of the token to withdraw.
+    /// * `recipient` - The address to receive the tokens.
+    ///
+    /// # Errors
+    /// * `Error::Unauthorized` - If the caller is not the administrator.
     pub fn withdraw_all_treasury(
         env: Env,
         token: Address,
@@ -491,6 +631,10 @@ impl SkillSphereContract {
         Ok(current_balance)
     }
 
+    /// Calculates the platform fee for a given session amount based on current tiers.
+    ///
+    /// # Errors
+    /// * `Error::InvalidAmount` - If the amount is negative.
     pub fn calculate_platform_fee(env: Env, session_amount: i128) -> Result<i128, Error> {
         if session_amount < 0 {
             return Err(Error::InvalidAmount);
@@ -500,6 +644,10 @@ impl SkillSphereContract {
         Ok(Self::calculate_tiered_fee(&config, session_amount))
     }
 
+    /// Pauses all protocol activities (admin only).
+    ///
+    /// # Errors
+    /// * `Error::Unauthorized` - If the caller is not the administrator.
     pub fn pause_protocol(env: Env) -> Result<(), Error> {
         Self::require_admin(&env)?;
         env.storage()
@@ -509,6 +657,10 @@ impl SkillSphereContract {
         Ok(())
     }
 
+    /// Unpauses protocol activities (admin only).
+    ///
+    /// # Errors
+    /// * `Error::Unauthorized` - If the caller is not the administrator.
     pub fn unpause_protocol(env: Env) -> Result<(), Error> {
         Self::require_admin(&env)?;
         env.storage()
@@ -518,10 +670,19 @@ impl SkillSphereContract {
         Ok(())
     }
 
+    /// Checks if the protocol is currently paused.
     pub fn is_protocol_paused(env: Env) -> bool {
         Self::protocol_paused(&env)
     }
 
+    /// Manually sets an expert's reputation (admin only).
+    ///
+    /// # Arguments
+    /// * `expert` - The address of the expert.
+    /// * `reputation` - The reputation score to set.
+    ///
+    /// # Errors
+    /// * `Error::Unauthorized` - If the caller is not the administrator.
     pub fn set_expert_reputation(env: Env, expert: Address, reputation: u32) -> Result<(), Error> {
         Self::require_admin(&env)?;
         let mut profile = Self::expert_profile(&env, expert.clone());
@@ -534,10 +695,31 @@ impl SkillSphereContract {
         Ok(())
     }
 
+    /// Retrieves the current reputation of an expert.
     pub fn get_expert_reputation(env: Env, expert: Address) -> u32 {
         Self::expert_profile(&env, expert).reputation
     }
 
+    /// Starts a new session between a seeker and an expert.
+    ///
+    /// # Arguments
+    /// * `seeker` - The address of the seeker starting the session.
+    /// * `expert` - The address of the expert for the session.
+    /// * `token` - The address of the token used for payment.
+    /// * `amount` - The initial deposit amount.
+    /// * `min_reputation` - Minimum reputation required for the expert.
+    /// * `metadata_cid` - IPFS Content ID for session metadata.
+    ///
+    /// # Returns
+    /// * The ID of the newly created session.
+    ///
+    /// # Panics
+    /// * If the protocol is paused.
+    /// * If the metadata CID is invalid.
+    /// * If the expert is not registered or unavailable.
+    /// * If the expert's reputation is too low.
+    /// * If the amount is below the minimum required.
+    /// * If the seeker has insufficient balance.
     pub fn start_session(
         env: Env,
         seeker: Address,
@@ -621,6 +803,14 @@ impl SkillSphereContract {
         session_id
     }
 
+    /// Calculates the amount claimable from a session at a given time.
+    ///
+    /// # Arguments
+    /// * `session_id` - The ID of the session.
+    /// * `current_time` - The timestamp to calculate for.
+    ///
+    /// # Errors
+    /// * `Error::SessionNotFound` - If the session doesn't exist.
     pub fn calculate_claimable_amount(
         env: Env,
         session_id: u64,
@@ -631,11 +821,25 @@ impl SkillSphereContract {
         Ok(Self::claimable_amount_for_session(&session, effective_time))
     }
 
+    /// Calculates the timestamp when a session will expire based on its balance and rate.
+    ///
+    /// # Errors
+    /// * `Error::SessionNotFound` - If the session doesn't exist.
     pub fn calculate_expiry_timestamp(env: Env, session_id: u64) -> Result<u64, Error> {
         let session = Self::get_session_or_error(&env, session_id)?;
         Ok(Self::expiry_timestamp_for_session(&session))
     }
 
+    /// Pauses an active session.
+    ///
+    /// # Arguments
+    /// * `caller` - The address of the participant (seeker or expert).
+    /// * `session_id` - The ID of the session.
+    ///
+    /// # Errors
+    /// * `Error::SessionNotFound` - If the session doesn't exist.
+    /// * `Error::Unauthorized` - If the caller is not a participant.
+    /// * `Error::InvalidSessionState` - If the session is not active.
     pub fn pause_session(env: Env, caller: Address, session_id: u64) -> Result<(), Error> {
         caller.require_auth();
         let mut session = Self::get_session_or_error(&env, session_id)?;
@@ -661,6 +865,16 @@ impl SkillSphereContract {
         Ok(())
     }
 
+    /// Resumes a paused session.
+    ///
+    /// # Arguments
+    /// * `caller` - The address of the participant (seeker or expert).
+    /// * `session_id` - The ID of the session.
+    ///
+    /// # Errors
+    /// * `Error::SessionNotFound` - If the session doesn't exist.
+    /// * `Error::Unauthorized` - If the caller is not a participant.
+    /// * `Error::InvalidSessionState` - If the session is not paused.
     pub fn resume_session(env: Env, caller: Address, session_id: u64) -> Result<(), Error> {
         Self::ensure_protocol_active(&env)?;
         caller.require_auth();
@@ -698,6 +912,18 @@ impl SkillSphereContract {
         Ok(())
     }
 
+    /// Settles an active session, transferring accrued funds to the expert.
+    ///
+    /// # Arguments
+    /// * `session_id` - The ID of the session to settle.
+    ///
+    /// # Returns
+    /// * The amount of tokens transferred to the expert.
+    ///
+    /// # Errors
+    /// * `Error::SessionNotFound` - If the session doesn't exist.
+    /// * `Error::Unauthorized` - If the caller is not the expert.
+    /// * `Error::InvalidSessionState` - If the session is already finished or disputed.
     pub fn settle_session(env: Env, session_id: u64) -> Result<i128, Error> {
         Self::ensure_protocol_active(&env)?;
         let session = Self::get_session_or_error(&env, session_id)?;
@@ -705,6 +931,17 @@ impl SkillSphereContract {
         Self::internal_settle(&env, session)
     }
 
+    /// Settles multiple sessions in a single transaction.
+    ///
+    /// # Arguments
+    /// * `expert` - The address of the expert settling the sessions.
+    /// * `session_ids` - A list of session IDs to settle.
+    ///
+    /// # Returns
+    /// * A list of amounts settled for each session.
+    ///
+    /// # Errors
+    /// * `Error::Unauthorized` - If the caller is not the expert.
     pub fn batch_settle(
         env: Env,
         expert: Address,
@@ -739,6 +976,18 @@ impl SkillSphereContract {
         Ok(results)
     }
 
+    /// Refunds a session to the seeker.
+    ///
+    /// # Arguments
+    /// * `seeker` - The address of the seeker requesting the refund.
+    /// * `session_id` - The ID of the session.
+    ///
+    /// # Returns
+    /// * The amount refunded to the seeker.
+    ///
+    /// # Errors
+    /// * `Error::SessionNotFound` - If the session doesn't exist.
+    /// * `Error::Unauthorized` - If the caller is not the seeker.
     pub fn refund_session(env: Env, seeker: Address, session_id: u64) -> Result<i128, Error> {
         seeker.require_auth();
         let mut session = Self::get_session_or_error(&env, session_id)?;
@@ -789,6 +1038,15 @@ impl SkillSphereContract {
         Ok(refund_amount)
     }
 
+    /// Ends a session, settling accrued funds and returning the remainder to the seeker.
+    ///
+    /// # Arguments
+    /// * `caller` - The address of the participant (seeker or expert).
+    /// * `session_id` - The ID of the session.
+    ///
+    /// # Errors
+    /// * `Error::SessionNotFound` - If the session doesn't exist.
+    /// * `Error::Unauthorized` - If the caller is not a participant.
     pub fn end_session(env: Env, caller: Address, session_id: u64) -> Result<(), Error> {
         caller.require_auth();
         let mut session = Self::get_session_or_error(&env, session_id)?;
@@ -799,10 +1057,18 @@ impl SkillSphereContract {
         Ok(())
     }
 
+    /// Retrieves the details of a session.
+    ///
+    /// # Errors
+    /// * `Error::SessionNotFound` - If the session doesn't exist.
     pub fn get_session(env: Env, session_id: u64) -> Result<Session, Error> {
         Self::get_session_or_error(&env, session_id)
     }
 
+    /// Retrieves the current accrued earnings for a session.
+    ///
+    /// # Errors
+    /// * `Error::SessionNotFound` - If the session doesn't exist.
     pub fn get_current_earnings(env: Env, session_id: u64) -> Result<i128, Error> {
         let session = Self::get_session_or_error(&env, session_id)?;
         let now = env.ledger().timestamp();
@@ -810,6 +1076,20 @@ impl SkillSphereContract {
         Ok(Self::claimable_amount_for_session(&session, effective_time))
     }
 
+    /// Flags a session as disputed.
+    ///
+    /// # Arguments
+    /// * `session_id` - The ID of the session.
+    /// * `seeker` - The address of the seeker flagging the dispute.
+    /// * `reason` - The reason for the dispute.
+    /// * `evidence_cid` - IPFS Content ID for dispute evidence.
+    ///
+    /// # Errors
+    /// * `Error::SessionNotFound` - If the session doesn't exist.
+    /// * `Error::Unauthorized` - If the caller is not the seeker.
+    /// * `Error::EmptyDisputeReason` - If the reason is empty.
+    /// * `Error::InvalidCid` - If the evidence CID is invalid.
+    /// * `Error::InvalidSessionState` - If the session is not active or paused.
     pub fn flag_dispute(
         env: Env,
         session_id: u64,
@@ -866,6 +1146,16 @@ impl SkillSphereContract {
         Ok(())
     }
 
+    /// Resolves a dispute with a specific award split (admin only).
+    ///
+    /// # Arguments
+    /// * `session_id` - The ID of the session.
+    /// * `seeker_award_bps` - The bps of the balance to award to the seeker.
+    ///
+    /// # Errors
+    /// * `Error::Unauthorized` - If the caller is not the administrator.
+    /// * `Error::DisputeNotFound` - If no dispute exists for the session.
+    /// * `Error::InvalidSessionState` - If the dispute is already resolved.
     pub fn resolve_dispute(env: Env, session_id: u64, seeker_award_bps: u32) -> Result<(), Error> {
         Self::require_admin(&env)?;
 
@@ -887,6 +1177,11 @@ impl SkillSphereContract {
         Self::resolve_dispute_with_split(&env, &mut session, &mut dispute, seeker_award_bps, false)
     }
 
+    /// Automatically resolves a dispute after the expiry window.
+    ///
+    /// # Errors
+    /// * `Error::DisputeNotFound` - If no dispute exists.
+    /// * `Error::DisputeWindowActive` - If the dispute window has not expired.
     pub fn auto_resolve_expiry(env: Env, caller: Address, session_id: u64) -> Result<(), Error> {
         caller.require_auth();
 
@@ -910,6 +1205,10 @@ impl SkillSphereContract {
         Self::resolve_dispute_with_split(&env, &mut session, &mut dispute, MAX_BPS, true)
     }
 
+    /// Retrieves the details of a dispute.
+    ///
+    /// # Errors
+    /// * `Error::DisputeNotFound` - If no dispute exists for the session.
     pub fn get_dispute(env: Env, session_id: u64) -> Result<Dispute, Error> {
         env.storage()
             .persistent()
@@ -917,6 +1216,13 @@ impl SkillSphereContract {
             .ok_or(Error::DisputeNotFound)
     }
 
+    /// Initiates a contract upgrade by setting a new WASM hash and a timelock.
+    ///
+    /// # Arguments
+    /// * `new_wasm_hash` - The hash of the new contract WASM.
+    ///
+    /// # Errors
+    /// * `Error::Unauthorized` - If the caller is not the administrator.
     pub fn initiate_upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
         Self::require_admin(&env)?;
 
@@ -936,6 +1242,12 @@ impl SkillSphereContract {
         Ok(())
     }
 
+    /// Executes a previously initiated contract upgrade after the timelock has expired.
+    ///
+    /// # Errors
+    /// * `Error::Unauthorized` - If the caller is not the administrator.
+    /// * `Error::UpgradeNotInitiated` - If no upgrade has been initiated.
+    /// * `Error::TimelockNotExpired` - If the timelock period has not yet passed.
     pub fn execute_upgrade(env: Env) -> Result<(), Error> {
         Self::require_admin(&env)?;
 
@@ -959,6 +1271,10 @@ impl SkillSphereContract {
         Ok(())
     }
 
+    /// Retrieves the details of the pending upgrade timelock.
+    ///
+    /// # Errors
+    /// * `Error::UpgradeNotInitiated` - If no upgrade is pending.
     pub fn get_upgrade_timelock(env: Env) -> Result<UpgradeTimelock, Error> {
         env.storage()
             .instance()
@@ -1405,6 +1721,20 @@ impl SkillSphereContract {
     /// Allow experts to withdraw accrued funds mid-session without closing it.
     /// Calculates currently claimable amount, transfers tokens without changing session state,
     /// and updates last_settlement_time.
+    /// Allows an expert to withdraw currently accrued funds from an active session.
+    ///
+    /// # Arguments
+    /// * `session_id` - The ID of the session.
+    ///
+    /// # Returns
+    /// * The amount of tokens withdrawn.
+    ///
+    /// # Errors
+    /// * `Error::SessionNotFound` - If the session doesn't exist.
+    /// * `Error::Unauthorized` - If the caller is not the expert.
+    /// * `Error::InvalidSessionState` - If the session is not active.
+    /// * `Error::InvalidAmount` - If there are no accrued funds to withdraw.
+    /// * `Error::InsufficientBalance` - If the session balance is less than accrued (should not happen).
     pub fn withdraw_accrued(env: Env, session_id: u64) -> Result<i128, Error> {
         let mut session = Self::get_session_or_error(&env, session_id)?;
         
@@ -1453,6 +1783,14 @@ impl SkillSphereContract {
 
     // ===== Issue #163: Staking Mechanism for Top Experts =====
     /// Allows experts to stake tokens to boost profile visibility
+    /// Allows an expert to stake tokens to the contract.
+    ///
+    /// # Arguments
+    /// * `expert` - The address of the expert.
+    /// * `amount` - The amount of tokens to stake.
+    ///
+    /// # Errors
+    /// * `Error::InvalidAmount` - If the amount is zero or negative.
     pub fn stake_tokens(env: Env, expert: Address, amount: i128) -> Result<(), Error> {
         expert.require_auth();
 
@@ -1479,6 +1817,15 @@ impl SkillSphereContract {
     }
 
     /// Allows experts to withdraw staked tokens
+    /// Allows an expert to unstake tokens from the contract.
+    ///
+    /// # Arguments
+    /// * `expert` - The address of the expert.
+    /// * `amount` - The amount of tokens to unstake.
+    ///
+    /// # Errors
+    /// * `Error::InvalidAmount` - If the amount is zero or negative.
+    /// * `Error::InsufficientBalance` - If the expert has insufficient staked balance.
     pub fn unstake_tokens(env: Env, expert: Address, amount: i128) -> Result<(), Error> {
         expert.require_auth();
 
@@ -1511,6 +1858,15 @@ impl SkillSphereContract {
 
     // ===== Issue #164: Multi-Sig Arbitration Panel =====
     /// Initialize the arbitration committee with a 2-of-3 multisig requirement
+    /// Initializes the arbitration committee with three members.
+    ///
+    /// # Arguments
+    /// * `member1` - First committee member address.
+    /// * `member2` - Second committee member address.
+    /// * `member3` - Third committee member address.
+    ///
+    /// # Errors
+    /// * `Error::Unauthorized` - If the caller is not the administrator.
     pub fn initialize_arbitration_committee(
         env: Env,
         member1: Address,
@@ -1534,6 +1890,15 @@ impl SkillSphereContract {
     }
 
     /// Propose a resolution to a dispute (requires one committee member signature)
+    /// Proposes a resolution for a dispute.
+    ///
+    /// # Arguments
+    /// * `caller` - The address of the committee member.
+    /// * `session_id` - The ID of the session.
+    /// * `seeker_award_bps` - Proposed award for the seeker in bps.
+    ///
+    /// # Errors
+    /// * `Error::InvalidSplitBps` - If the bps exceeds 10,000.
     pub fn propose_resolution(
         env: Env,
         caller: Address,
@@ -1556,6 +1921,20 @@ impl SkillSphereContract {
 
     // ===== Issue #165: Escrow Slashing for Malicious Experts =====
     /// Allow arbitration committee to slash staked tokens from malicious experts
+    /// Slashes an expert's staked balance for malicious behavior.
+    ///
+    /// # Arguments
+    /// * `caller` - The address of the administrator.
+    /// * `expert_id` - The address of the expert to slash.
+    /// * `amount` - The amount to slash.
+    /// * `reason` - The reason for slashing.
+    ///
+    /// # Errors
+    /// * `Error::Unauthorized` - If the caller is not the administrator.
+    /// * `Error::InvalidAmount` - If the amount is zero or negative.
+    /// * `Error::EmptyDisputeReason` - If the reason is empty.
+    /// * `Error::InsufficientBalance` - If the expert has insufficient staked balance.
+    /// * `Error::InsufficientTreasuryBalance` - If the treasury address is not set.
     pub fn slash_expert(
         env: Env,
         caller: Address,
@@ -1696,7 +2075,7 @@ mod test {
 
     use super::*;
     use soroban_sdk::testutils::{Address as _, Ledger};
-    use soroban_sdk::{token, Address, Env, String, Vec};
+    use soroban_sdk::{token, Address, Env, IntoVal, String, Vec};
 
     fn register_and_avail(env: &Env, client: &SkillSphereContractClient, expert: &Address, rate: i128) {
         let cid = test_cid(env);
@@ -3010,7 +3389,5 @@ mod test {
         
         assert_eq!(token1_fees, 5); // 5% of 100
         assert_eq!(token2_fees, 5); // 5% of 100
-    }get(0).unwrap(), 95);
-        assert_eq!(results.get(1).unwrap(), 0);
     }
 }
